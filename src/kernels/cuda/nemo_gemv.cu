@@ -11,6 +11,7 @@
 // a butterfly over the LPR lanes; then * scale_2.  It does not depend on M (each token has its own accumulators), so
 // a verify window's rows match the one-token rows bit for bit.
 #include "strata/kernels/nemo_gemv.hpp"
+#include "strata/kernels/nemo_ptx.hpp"
 #include "strata/kernels/nemo_tc.hpp"
 
 #include <cuda_bf16.h>
@@ -434,10 +435,14 @@ __device__ __forceinline__ uint32_t bf2(float lo, float hi) {
 }
 
 __device__ __forceinline__ void mma_bf16(float* c, uint32_t a0, uint32_t a2, uint32_t b0, uint32_t b1) {
+#ifdef STRATA_HIP_GFX906
+    strata::ptx::mma_m16n8k16_f32<strata::ptx::bf16x2>(c, a0, 0u, a2, 0u, b0, b1);
+#else
     asm volatile("mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
                  : "+f"(c[0]), "+f"(c[1]), "+f"(c[2]), "+f"(c[3])
                  : "r"(a0), "r"(0u), "r"(a2), "r"(0u), "r"(b0), "r"(b1));
+#endif
 }
 
 struct TNvfp4 {
@@ -761,7 +766,7 @@ void launch(const uint8_t* w1, const uint8_t* const* wp, float s2, const float* 
     const size_t smem = (TABW<D>() + (SH ? (size_t) MT * (cols + cols / D::VALS * 4) : 0)) * sizeof(float);
     static bool attr = false;
     if (!attr) {
-        cudaFuncSetAttribute(gemv_kernel<D, MT, LPR, SH>, cudaFuncAttributeMaxDynamicSharedMemorySize, 99 * 1024);
+        cudaFuncSetAttribute(gemv_kernel<D, MT, LPR, SH>, cudaFuncAttributeMaxDynamicSharedMemorySize, NEMO_SMEM_MAX);
         attr = true;
     }
     if (!g_sms) {
@@ -795,7 +800,7 @@ template <class D, int MT>
 void by_lpr(const uint8_t* w1, const uint8_t* const* wp, float s2, const float* s2p, const float* x, int64_t ldx,
             int64_t xs, float* y, int64_t ldy, int64_t ys, const int32_t* idx, const int32_t* xidx, int64_t rows, int64_t cols, int64_t M, int nmat, bool relu2,
             bool acc, cudaStream_t st) {
-    if ((TABW<D>() + MT * (cols + cols / D::VALS * 4)) * 4 <= 99 * 1024)
+    if ((TABW<D>() + MT * (cols + cols / D::VALS * 4)) * 4 <= NEMO_SMEM_MAX)
         by_lpr2<D, MT, true>(w1, wp, s2, s2p, x, ldx, xs, y, ldy, ys, idx, xidx, rows, cols, M, nmat, relu2, acc, st);
     else
         by_lpr2<D, MT, false>(w1, wp, s2, s2p, x, ldx, xs, y, ldy, ys, idx, xidx, rows, cols, M, nmat, relu2, acc, st);

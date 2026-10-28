@@ -9,6 +9,7 @@
 // SM120_16x8x64_TN_VS traits: A reg 0/1 rows g / g+8, values 8t.., regs 2/3 the same 32 values on; B reg 0/1 column
 // g, values 8t.. and 32 + 8t..).  Scales: thread (g, t) gives A's row g + 8 (t & 1) and B's column g, a byte per 16 K.
 #include "strata/kernels/nemo_fp4.hpp"
+#include "strata/kernels/nemo_ptx.hpp"
 
 #include <cuda_fp4.h>
 #include <cuda_fp8.h>
@@ -236,6 +237,12 @@ __global__ void __launch_bounds__(256) quant_rows_reg_kernel(const XT* __restric
     }
 }
 
+#ifdef STRATA_HIP_GFX906
+// no FP4 mma here (NEMO_FP4_MMA stays undefined, nemo_fp4_ok() is false): these only let the file build
+__device__ __forceinline__ void cp16(uint32_t dst, const void* src, int bytes) { strata::ptx::cp_async<16>(dst, src, bytes); }
+__device__ __forceinline__ void cp4(uint32_t dst, const void* src, int bytes) { strata::ptx::cp_async<4>(dst, src, bytes); }
+__device__ __forceinline__ void ldsm4(uint32_t* r, uint32_t a) { strata::ptx::ldmatrix_x4(r, a); }
+#else
 __device__ __forceinline__ void cp16(uint32_t dst, const void* src, int bytes) {
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src), "r"(bytes));
 }
@@ -246,6 +253,7 @@ __device__ __forceinline__ void ldsm4(uint32_t* r, uint32_t a) {
     asm volatile("ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];\n"
                  : "=r"(r[0]), "=r"(r[1]), "=r"(r[2]), "=r"(r[3]) : "r"(a));
 }
+#endif
 
 __device__ __forceinline__ void mma_fp4(float* c, const uint32_t* a, uint32_t b0, uint32_t b1, uint32_t sa, uint32_t sb) {
 #ifdef NEMO_FP4_MMA
@@ -361,7 +369,7 @@ __device__ __forceinline__ void gemm_tile(const uint8_t* __restrict__ bg, const 
 #pragma unroll
     for (int p = 0; p < ST - 1; ++p) {
         if (p < NS) load(p * KSUB, p);
-        asm volatile("cp.async.commit_group;\n" ::);
+        NEMO_CP_COMMIT();
     }
     if (GG) {
         gload(0);
@@ -369,10 +377,10 @@ __device__ __forceinline__ void gemm_tile(const uint8_t* __restrict__ bg, const 
         if (NS > 1) gload(1);
     }
     for (int ks = 0; ks < NS; ++ks) {
-        asm volatile("cp.async.wait_group %0;\n" ::"n"(ST - 2));
+        NEMO_CP_WAIT(ST - 2);
         __syncthreads();
         if (ks + ST - 1 < NS) load((ks + ST - 1) * KSUB, (ks + ST - 1) % ST);
-        asm volatile("cp.async.commit_group;\n" ::);
+        NEMO_CP_COMMIT();
         const int stage = ks % ST;
         const uint32_t st = sbase + stage * STAGE;
         const uint8_t* ssa = sm + stage * STAGE + 2 * QB;
@@ -410,7 +418,7 @@ __device__ __forceinline__ void gemm_tile(const uint8_t* __restrict__ bg, const 
             if (ks + 2 < NS) gload(ks + 2);
         }
     }
-    asm volatile("cp.async.wait_group 0;\n" ::);
+    NEMO_CP_WAIT(0);
 
 #pragma unroll
     for (int i = 0; i < 4; ++i)

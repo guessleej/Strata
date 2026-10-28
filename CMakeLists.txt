@@ -1042,7 +1042,9 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
   target_link_libraries(gr_parity PRIVATE strata_kernels ${_strata_gpu_runtime_target})
   add_test(NAME gr_parity COMMAND gr_parity --selftest)
 
-  # strata-nemotron: CUDA only - the FP4 prompt GEMMs are sm_120a, and nothing here is ported to HIP
+  # strata-nemotron: CUDA, and AMD through the HIP compat layer (STRATA_HIP_GFX906, e.g. gfx1151): there the PTX is
+  # include/strata/platform/hip_compat/ptx_emu.h and the FP4 prompt GEMMs (sm_120a only) are off, so the prompt's
+  # expert GEMMs take the BF16 path
   if(STRATA_ENABLE_CUDA AND NOT STRATA_ENABLE_HIP)
     # strata-nemotron: the Nemotron-H kernels, in their own library so that nothing on the qwen4exp path links them
     add_library(strata_nemotron_kernels STATIC src/kernels/cuda/mamba.cu src/kernels/cuda/nemo_attn.cu
@@ -1060,10 +1062,12 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     add_executable(nemo_attn_bench src/kernels/nemo_attn_bench.cpp)
     target_include_directories(nemo_attn_bench PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(nemo_attn_bench PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target})
-    add_executable(nemo_fp4_parity src/kernels/nemo_fp4_parity.cpp)
-    target_include_directories(nemo_fp4_parity PRIVATE ${_strata_gpu_include_directories})
-    target_link_libraries(nemo_fp4_parity PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target})
-    add_test(NAME nemo_fp4_parity COMMAND nemo_fp4_parity)
+    if(NOT STRATA_HIP_GFX906)   # the FP4 mma is sm_120a only: on HIP nemo_fp4_ok() is false and nothing calls it
+      add_executable(nemo_fp4_parity src/kernels/nemo_fp4_parity.cpp)
+      target_include_directories(nemo_fp4_parity PRIVATE ${_strata_gpu_include_directories})
+      target_link_libraries(nemo_fp4_parity PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target})
+      add_test(NAME nemo_fp4_parity COMMAND nemo_fp4_parity)
+    endif()
     add_executable(nemo_q8_parity src/kernels/nemo_q8_parity.cpp)
     target_include_directories(nemo_q8_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(nemo_q8_parity PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target})
@@ -1086,9 +1090,11 @@ if(STRATA_ENABLE_CUDA OR STRATA_ENABLE_HIP)
     target_include_directories(nemo_gemv_bench PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(nemo_gemv_bench PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target})
     # the C4 column layout of down_proj against today's GEMV, cuBLAS and cuSPARSE (real relu^2 inputs: STRATA_NEMO_ZERO_DUMP)
-    add_executable(nemo_c4_bench src/kernels/nemo_c4_bench.cpp)
-    target_include_directories(nemo_c4_bench PRIVATE ${_strata_gpu_include_directories})
-    target_link_libraries(nemo_c4_bench PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target} CUDA::cublas CUDA::cusparse)
+    if(NOT STRATA_HIP_GFX906)   # cuSPARSE has no stand-in in the HIP compat layer
+      add_executable(nemo_c4_bench src/kernels/nemo_c4_bench.cpp)
+      target_include_directories(nemo_c4_bench PRIVATE ${_strata_gpu_include_directories})
+      target_link_libraries(nemo_c4_bench PRIVATE strata_nemotron_kernels ${_strata_gpu_runtime_target} CUDA::cublas CUDA::cusparse)
+    endif()
     add_executable(moe_parity src/kernels/moe_parity.cpp)
     target_include_directories(moe_parity PRIVATE ${_strata_gpu_include_directories})
     target_link_libraries(moe_parity PRIVATE strata_nemotron_kernels strata_kernels ${_strata_gpu_runtime_target})

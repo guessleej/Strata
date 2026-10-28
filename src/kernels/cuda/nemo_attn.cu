@@ -16,6 +16,7 @@
 // the error is ~3e-3 relative (BF16 everything: ~1.3e-3), measured on layer 7 (a NumPy emulation of the kernel and
 // attn_parity).
 #include "strata/kernels/nemo_attn.hpp"
+#include "strata/kernels/nemo_ptx.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -161,7 +162,11 @@ __global__ void attn_merge_kernel(const float* __restrict__ pacc, const float* _
 
 // ---- the prompt's form (see the top) ----
 #ifndef NEMO_ATTN_AKT
+#ifdef STRATA_HIP_GFX906
+#define NEMO_ATTN_AKT 64   // 128 keys a tile take 97 KB of shared memory: over the 64 KB of LDS
+#else
 #define NEMO_ATTN_AKT 128
+#endif
 #endif
 constexpr int AKT = NEMO_ATTN_AKT;
    ///< keys a tile
@@ -176,6 +181,26 @@ constexpr int VP = HD;           ///< a shared V row, halves      land on distin
 #endif
 __device__ __forceinline__ int sw16(int row, int chunk) { return (chunk ^ (row & 7)) * 16; }
 
+#ifdef STRATA_HIP_GFX906
+__device__ __forceinline__ void mma_s8(int* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
+    strata::ptx::mma_s8_s32(c, a, b0, b1);
+}
+__device__ __forceinline__ void mma_f16(uint32_t* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
+    strata::ptx::mma_f16_f16(c, a, b0, b1);
+}
+__device__ __forceinline__ void ldsm_x4(uint32_t* r, const void* p) {
+    strata::ptx::ldmatrix_x4(r, strata::ptx::cvta_shared(p));
+}
+__device__ __forceinline__ void ldsm_x4_t(uint32_t* r, const void* p) {
+    strata::ptx::ldmatrix_x4_trans(r, strata::ptx::cvta_shared(p));
+}
+__device__ __forceinline__ void cp16(void* dst, const void* src) {
+    strata::ptx::cp_async<16>(strata::ptx::cvta_shared(dst), src);
+}
+__device__ __forceinline__ void cp4(void* dst, const void* src) {
+    strata::ptx::cp_async<4>(strata::ptx::cvta_shared(dst), src);
+}
+#else
 __device__ __forceinline__ void mma_s8(int* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
     asm volatile("mma.sync.aligned.m16n8k32.row.col.s32.s8.s8.s32 {%0,%1,%2,%3}, {%4,%5,%6,%7}, {%8,%9}, "
                  "{%0,%1,%2,%3};\n"
@@ -210,6 +235,7 @@ __device__ __forceinline__ void cp4(void* dst, const void* src) {
     const uint32_t a = (uint32_t) __cvta_generic_to_shared(dst);
     asm volatile("cp.async.ca.shared.global [%0], [%1], 4;\n" ::"r"(a), "l"(src));
 }
+#endif
 
 __device__ __forceinline__ uint32_t pack_s8(int a, int b, int c, int d) {
     return (uint32_t) (a & 0xff) | ((uint32_t) (b & 0xff) << 8) | ((uint32_t) (c & 0xff) << 16) | ((uint32_t) d << 24);
@@ -326,7 +352,7 @@ __global__ void __launch_bounds__(NW * 32, NEMO_ATTN_MINB) attn_tc_kernel(const 
             if (j < n_keys) cp4(sks + buf * AKT + threadIdx.x, kv.ks[j >> kv.shift] + cell_of(kv.shift, j) * n_kv + kvh);
             else sks[buf * AKT + threadIdx.x] = 0.0f;
         }
-        asm volatile("cp.async.commit_group;\n" ::);
+        NEMO_CP_COMMIT();
     };
 
     float oc[16][4];
@@ -338,9 +364,9 @@ __global__ void __launch_bounds__(NW * 32, NEMO_ATTN_MINB) attn_tc_kernel(const 
     for (int it = 0; it < ntiles; ++it) {
         if (it + 1 < ntiles) {
             load((it + 1) & 1, it + 1);
-            asm volatile("cp.async.wait_group 1;\n" ::);
+            NEMO_CP_WAIT(1);
         } else {
-            asm volatile("cp.async.wait_group 0;\n" ::);
+            NEMO_CP_WAIT(0);
         }
         __syncthreads();
         const int64_t jt = j0 + (int64_t) it * AKT;

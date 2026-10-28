@@ -111,6 +111,7 @@ inline hipError_t strata_device_get_attribute(int* v, hipDeviceAttribute_t a, in
 #define cudaMemcpy2DAsync hipMemcpy2DAsync
 #define cudaMemset hipMemset
 #define cudaMemsetAsync hipMemsetAsync
+#define cudaMemset2DAsync hipMemset2DAsync
 // Mapped host memory is how the GPU and the CPU talk inside a running graph (the doorbells, the CPU experts'
 // results, the verify flags): a kernel spins on a word the CPU writes, and the CPU on a word the kernel writes.
 // On AMD that needs FINE-GRAINED (coherent) memory - coarse-grained host memory may sit in the GPU's L2 for the
@@ -231,7 +232,9 @@ static __device__ __forceinline__ void strata_nanosleep(unsigned int ns) {
 
 // __dp4a(a, b, c): signed 8-bit dot product plus accumulator; gfx906 has v_dot4_i32_i8.
 static __device__ __forceinline__ int strata_dp4a(int a, int b, int c) {
-#if defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__) || defined(__gfx942__) || defined(__GFX11__) || defined(__GFX12__)
+#if defined(__GFX11__) || defined(__GFX12__)
+    return __builtin_amdgcn_sudot4(true, a, true, b, c, false);   // RDNA3/4: v_dot4_i32_iu8 (no v_dot4_i32_i8)
+#elif defined(__gfx906__) || defined(__gfx908__) || defined(__gfx90a__) || defined(__gfx942__)
     return __builtin_amdgcn_sdot4(a, b, c, false);
 #else
     const int8_t* va = reinterpret_cast<const int8_t*>(&a);
@@ -305,5 +308,11 @@ static __device__ __forceinline__ unsigned int strata_byte_perm(unsigned int x, 
     return __builtin_amdgcn_perm(y, x, sel);
 }
 #define __byte_perm(x, y, s) strata_byte_perm((unsigned int) (x), (unsigned int) (y), (unsigned int) (s))
+
+// cvta.to.shared: the 32-bit LDS address of a generic pointer into shared memory
+static __device__ __forceinline__ unsigned int strata_cvta_shared(const void* p) {
+    return (unsigned int) (uintptr_t) (const __attribute__((address_space(3))) void*) p;
+}
+#define __cvta_generic_to_shared(p) strata_cvta_shared(p)
 
 #endif  // device side

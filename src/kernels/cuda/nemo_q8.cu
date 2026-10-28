@@ -8,6 +8,7 @@
 // and B's reg 0 (column g, k 4t..) / 1 (k 16 + 4t..).  Per 32-value block the int32 sum of an mma is exact; it goes
 // into the FP32 accumulator times the row's and the column's scales.
 #include "strata/kernels/nemo_q8.hpp"
+#include "strata/kernels/nemo_ptx.hpp"
 
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -16,7 +17,11 @@ namespace strata::kernels {
 namespace {
 
 #ifndef NEMO_Q8_KS
+#ifdef STRATA_HIP_GFX906
+#define NEMO_Q8_KS 1   // 2 stages of KS = 2 are 72 KB: over the 64 KB of LDS
+#else
 #define NEMO_Q8_KS 2
+#endif
 #endif
 #ifndef NEMO_Q8_ST
 #define NEMO_Q8_ST 2
@@ -27,6 +32,14 @@ constexpr int QB = BM * RB, SB = BM * 8 * KS;      // a stage's bytes of one ope
 constexpr int STAGE = 2 * QB + 2 * SB;
 constexpr int MAGIC = 0x4B400000;   ///< the bits of 12582912.0f
 
+#ifdef STRATA_HIP_GFX906
+__device__ __forceinline__ void cp16(uint32_t dst, const void* src, int bytes) { strata::ptx::cp_async<16>(dst, src, bytes); }
+__device__ __forceinline__ void cp8(uint32_t dst, const void* src, int bytes) { strata::ptx::cp_async<8>(dst, src, bytes); }
+__device__ __forceinline__ void ldsm4(uint32_t* r, uint32_t a) { strata::ptx::ldmatrix_x4(r, a); }
+__device__ __forceinline__ void mma_s8(int* c, const uint32_t* a, uint32_t b0, uint32_t b1) {
+    strata::ptx::mma_s8_s32(c, a, b0, b1);
+}
+#else
 __device__ __forceinline__ void cp16(uint32_t dst, const void* src, int bytes) {
     asm volatile("cp.async.cg.shared.global [%0], [%1], 16, %2;\n" ::"r"(dst), "l"(src), "r"(bytes));
 }
@@ -43,6 +56,7 @@ __device__ __forceinline__ void mma_s8(int* c, const uint32_t* a, uint32_t b0, u
                  : "+r"(c[0]), "+r"(c[1]), "+r"(c[2]), "+r"(c[3])
                  : "r"(a[0]), "r"(a[1]), "r"(a[2]), "r"(a[3]), "r"(b0), "r"(b1));
 }
+#endif
 
 /// The swizzled byte offset of (row, 16-byte chunk) in a stage's operand.
 __device__ __forceinline__ int swz(int row, int chunk) {
@@ -91,13 +105,13 @@ __global__ void __launch_bounds__(NTH) gemm_kernel(const int8_t* __restrict__ aq
 #pragma unroll
     for (int p = 0; p < ST - 1; ++p) {
         if (p < NS) load(p, p);
-        asm volatile("cp.async.commit_group;\n" ::);
+        NEMO_CP_COMMIT();
     }
     for (int ks = 0; ks < NS; ++ks) {
-        asm volatile("cp.async.wait_group %0;\n" ::"n"(ST - 2));
+        NEMO_CP_WAIT(ST - 2);
         __syncthreads();
         if (ks + ST - 1 < NS) load(ks + ST - 1, (ks + ST - 1) % ST);
-        asm volatile("cp.async.commit_group;\n" ::);
+        NEMO_CP_COMMIT();
         const int stage = ks % ST;
         const uint32_t st = sbase + stage * STAGE;
         const float* ssa = reinterpret_cast<const float*>(sm + stage * STAGE + 2 * QB);
@@ -143,7 +157,7 @@ __global__ void __launch_bounds__(NTH) gemm_kernel(const int8_t* __restrict__ aq
                 }
         }
     }
-    asm volatile("cp.async.wait_group 0;\n" ::);
+    NEMO_CP_WAIT(0);
 
 #pragma unroll
     for (int i = 0; i < 4; ++i)

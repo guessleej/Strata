@@ -24,3 +24,6 @@
 #define CUBLAS_DEFAULT_MATH 0
 #define cublasSetMathMode(handle, mode) HIPBLAS_STATUS_SUCCESS
 #define cublasSetWorkspace(handle, ptr, bytes) HIPBLAS_STATUS_SUCCESS
+// RDNA has no TF32: the FP32 GEMMs that ask for it run in plain FP32 (exact, slower)
+#define CUBLAS_COMPUTE_32F_FAST_TF32 HIPBLAS_COMPUTE_32F
+#define CUBLAS_STATUS_NOT_SUPPORTED HIPBLAS_STATUS_NOT_SUPPORTED
