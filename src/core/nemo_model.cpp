@@ -1093,7 +1093,10 @@ bool NemoModel::load(const NemoOptions& opt, std::string& err) {
     // (it refused the read-only GGUF mapping), and a copy from pageable memory goes through the driver's staging at
     // a fraction of PCIe's speed.  The arena is filled from the mapping at load (from the page cache when the file is
     // in it), one MoE layer at a time on 8 threads.
-    {
+    // STRATA_NEMO_NO_ARENA: no arena - on a unified-memory APU (Strix Halo: 31 GB of system RAM, 96 GB carved out for
+    // the GPU) the experts do not fit the system RAM but do fit the card; they are copied once into the expert cache
+    // below, and a rare miss reads the mapping.
+    if (!std::getenv("STRATA_NEMO_NO_ARENA")) {
         size_t total = 0;
         for (const ExpertLayer& X : I.ex) total += (size_t) NE * (X.ub + X.db);
         uint8_t* arena = nullptr;
@@ -1449,6 +1452,21 @@ bool NemoModel::load(const NemoOptions& opt, std::string& err) {
         tail(I.eg_xb, R, L * 2);
         tail(I.parts_bf, C, K * L * 2);
         if (!std::getenv("STRATA_NEMO_NO_LOAN")) I.carve_loans();
+    }
+    // every expert fits the cache: fill it once, slot e = expert e, so decode never misses.  Through a page-locked
+    // blob: a hipMemcpy straight from the read-only GGUF mapping never returns on gfx1151 (ROCm 7.1.1)
+    if (I.real_slots >= NE) {
+        uint8_t* stage = nullptr;
+        NCK(cudaMallocHost((void**) &stage, I.blob));
+        for (ExpertLayer& X : I.ex)
+            for (int64_t e = 0; e < NE; ++e) {
+                std::memcpy(stage, X.up + (size_t) e * X.ub, X.ub);
+                std::memcpy(stage + X.ub, X.dn + (size_t) e * X.db, X.db);
+                NCK(cudaMemcpy(I.slot_ptr(X, e), stage, X.ub + X.db, cudaMemcpyHostToDevice));
+                X.expert_in[(size_t) e] = (int32_t) e;
+                X.slot_of[(size_t) e] = (int32_t) e;
+            }
+        cudaFreeHost(stage);
     }
     I.lend();
     stats_.slots_per_layer = I.slots;
