@@ -4,7 +4,8 @@ The Nemotron 3.5 Super engine of this fork (`strata-nemotron`) built for the Ryz
 RDNA3.5, `gfx1151`). The engine was written for one RTX 5090 (sm_120a): its kernels use PTX directly (`cp.async`, `ldmatrix`,
 `mma.sync`, FP4 block-scaled mma). This port keeps those kernels and gives them HIP stand-ins with the same lane contract, so
 the kernel code itself is unchanged. **Status: experimental.** Every kernel passes the fork's own parity tests on gfx1151
-against the same float64 references as on the 5090. A whole-model run is pending (see [Not done yet](#not-done-yet)).
+against the same float64 references as on the 5090, and the whole 71.6 GB model loads and answers on one Strix Halo box:
+10–16 tok/s decode, ~170 tok/s prefill (see [The whole model](#the-whole-model)).
 
 Ported by xCloudinfo. Branch `hip-gfx1151` of [guessleej/Strata](https://github.com/guessleej/Strata/tree/hip-gfx1151).
 
@@ -38,7 +39,7 @@ It takes the upstream `STRATA_HIP_GFX906` mode, which compiles the whole CUDA tr
   `CUBLAS_COMPUTE_32F_FAST_TF32` (plain FP32 on hipBLAS). `strata_dp4a` uses `sudot4` on gfx11/gfx12, which have no `sdot4`.
 - **CMake:** `nemo_c4_bench` (cuSPARSE) and `nemo_fp4_parity` (FP4 mma) are CUDA only.
 
-12 files, +299 / −22. Nothing changes for a CUDA build: every change is behind `STRATA_HIP_GFX906` or in the compat headers.
+12 files, +299 / −22 for the kernels, and the load change below. Nothing changes for a CUDA build: every change is behind `STRATA_HIP_GFX906` or in the compat headers.
 
 ## Parity on gfx1151
 
@@ -96,6 +97,54 @@ goes through the emulated int8 and f16 mma; decode does not. The two agree, so t
 5 TFLOP/s. The emulation is a correctness port, not a fast one: gfx11 has WMMA, and a WMMA version of these fragments is the
 obvious next step.
 
+## The whole model
+
+The engine keeps every expert in a page-locked RAM arena and copies misses into a VRAM cache. Here Linux has 31 GB of RAM
+and the GPU 96 GB, so the arena cannot be allocated, while all 20,480 experts fit in the GPU's memory. With
+`STRATA_NEMO_NO_ARENA=1` the arena is skipped; when the expert cache gets every expert of a layer (512 slots), it is filled
+once at load and slot e holds expert e, so nothing is fetched afterwards. The fill copies through a page-locked blob: a
+`hipMemcpy` straight from the read-only GGUF mapping never returned on ROCm 7.1.1 (the engine sat in the HSA runtime at
+100% of one core). Misses, if any, still read the mapping. `STRATA_NEMO_NO_LOAN=1` keeps the chunk scratch from lending slots.
+
+```
+strata-nemotron: loaded in 131.5 s: dense 6.63 GiB in VRAM, 512 expert slots per MoE layer (59.1 GiB),
+K/V 131072 cells (grows to 131072), experts NOT page-locked
+```
+
+System RAM stayed at 22 GB available through the whole run (load and every request). The config is
+[`strata-nemotron.example.json`](strata-nemotron.example.json) without `vision`, `--prompt-cache` and
+`--conversation-cache-mib` (both are pinned RAM), with `--max-context 131072 --kv-base 131072 --vram-reserve-mib 2048`
+and `--engine strata` on `serve/server.py`.
+
+**Speed**, through the server, greedy, MTP on (`--spec 5 --spec-min-p 0.8`):
+
+| prompt, tokens | time to first token | prefill, tok/s | decode, tok/s |
+|---:|---:|---:|---:|
+| 328 | 6.9 s | 48 | 9.8 |
+| 2,428 | 17.6 s | 138 | 10.0 |
+| 9,628 | 55.4 s | 174 | 10.6 |
+| 19,228 | 110.9 s | 173 | 9.9 |
+
+Expert hit rate 100.0% on every request. MTP accepted 29–30 of 39–42 drafts in 18–19 windows (2.5–2.7 tokens a window). Short chat
+answers (300–460 tokens) decoded at 11.5–16.0 tok/s; even a 30-token prompt took 5.1–5.7 s to the first token.
+
+For scale, the RTX 5090 (README): 2,277 tok/s prefill and 118 tok/s decode at 4K. Decode here is about a tenth. The
+memory is ~256 GB/s against ~1.8 TB/s, and the GEMV and attention kernels were written for sm_120's shapes. Prefill is
+about a fourteenth: the prompt's experts run through hipBLAS BF16 instead of FP4 tensor cores, and the attention and
+latent projections through the shuffle-emulated mma. Both are the next work (below).
+
+**Answers.** Five fixed questions, thinking off, temperature 0:
+
+| question | answer |
+|---|---|
+| Taiwan's National Health Insurance: the year it started, the ministry in charge (Traditional Chinese) | 1995-03-01, the Ministry of Health and Welfare (formerly the Department of Health, reorganized in 2013): right |
+| two pipes fill a pool in 6 h and 3 h; both open | 1/6 + 1/3 = 1/2, 2 hours, with the steps: right |
+| `is_prime(n)` and the primes below 20 | correct function, `[2, 3, 5, 7, 11, 13, 17, 19]`: right |
+| rewrite a casual sentence as a formal Taiwanese government letter | three usable versions and a term table; one version uses 蒞臨 (an honorific for the other side) for the writer's own visit |
+| answer with one JSON object, nothing else | `{"city": "Taipei", "country": "Taiwan"}` and nothing else: right |
+
+Coherent, correct Traditional Chinese, no garbled tokens, which is what a broken kernel on this path would show first.
+
 ## Build
 
 ROCm 7.14.1 (TheRock) for gfx1151 as in [STRIX_HALO.md](../STRIX_HALO.md), section 1. Then:
@@ -136,11 +185,9 @@ The references were made on a separate x86 machine (torch 2.15 CPU, transformers
 
 ## Not done yet
 
-- **A whole-model run.** The engine keeps every expert in a page-locked RAM arena (most of the 71.6 GB file) and copies misses into a VRAM cache.
-  On this machine Linux has 31 GB of RAM and the GPU has 96 GB, so the arena cannot be allocated, while all 20,480 experts would
-  fit in the GPU's memory. The engine needs a mode that skips the arena and fills the expert cache once at load. That change,
-  and decode / prefill speed and answer quality on the real GGUF, will be added here when measured.
+- **Speed.** A tenth of the 5090 in decode, a fourteenth in prefill (see above); the 5 s to the first token of a short
+  prompt is not explained yet.
 - **WMMA for the emulated mma.** The int8 / f16 / bf16 fragments map onto gfx11's `v_wmma_*` instructions; the shuffle
-  emulation is correct and slow.
+  emulation is correct and slow. The prompt's experts could take the same route instead of hipBLAS BF16.
 - **Other RDNA parts.** Only gfx1151 was built and tested. The same changes should hold for gfx1100 / gfx1201 (wave32, 64 KB
   LDS), untested.
