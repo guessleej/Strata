@@ -1,0 +1,83 @@
+===== nemo_q8_parity
+quant: device = host, byte for byte                        PASS
+layout: tiled Q8_0 -> Q8N exact                            PASS
+layout: tiled BF16 -> Q8N = host Q8_0                      PASS
+  gemm: worst |err| 8.52e-05 of max |y| 310
+gemm: = float64 (rel 2e-6), alpha, accumulate, M % 128 != 0 PASS
+  speed 16384 x 4096 x 4096: q8 49.619 ms (11 TOP/s), quant 1.640 ms; cuBLAS BF16 112.514 ms (5 TFLOP/s)
+  speed 16384 x 1024 x 4096: q8 14.790 ms (9 TOP/s), quant 1.616 ms; cuBLAS BF16 28.891 ms (5 TFLOP/s)
+ALL PASS
+===== nemo_gemm_parity
+  NVFP4  301 x 8192: worst |err|/rms 5.38e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 5.6e-08  ok
+  gemv    77 x  256: worst |err|/rms 3.10e-07 vs float64; M = 1..8 bit-identical: yes
+  tc      77 x  256: worst |err|/rms 4.95e-03 vs float64 (BF16 activations); M = 1..8 bit-identical: yes
+  tiled   77 x  256: worst |err|/rms 4.95e-03; M = 1..8 bit-identical: yes; BF16 dequant worst rel 0.0e+00
+  rowdq   77 x  256: worst |err| 0.0e+00 (exact expected)
+  NVFP4   77 x  256: worst |err|/rms 5.16e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 6.6e-08  ok
+  gemv  1000 x 4096: worst |err|/rms 3.90e-07 vs float64; M = 1..8 bit-identical: yes
+  tc    1000 x 4096: worst |err|/rms 9.20e-03 vs float64 (BF16 activations); M = 1..8 bit-identical: yes
+  tiled 1000 x 4096: worst |err|/rms 9.20e-03; M = 1..8 bit-identical: yes; BF16 dequant worst rel 3.9e-03
+  Q8_0  1000 x 4096: worst |err|/rms 6.96e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 7.9e-08  ok
+  gemv   300 x 8192: worst |err|/rms 5.29e-07 vs float64; M = 1..8 bit-identical: yes
+  tc     300 x 8192: worst |err|/rms 8.17e-03 vs float64 (BF16 activations); M = 1..8 bit-identical: yes
+  tiled  300 x 8192: worst |err|/rms 8.17e-03; M = 1..8 bit-identical: yes; BF16 dequant worst rel 3.9e-03
+  Q8_0   300 x 8192: worst |err|/rms 6.34e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 8.4e-08  ok
+  gemv  1000 x 4096: worst |err|/rms 4.07e-07 vs float64; M = 1..8 bit-identical: yes
+  tc    1000 x 4096: worst |err|/rms 6.29e-03 vs float64 (BF16 activations); M = 1..8 bit-identical: yes
+  tiled 1000 x 4096: worst |err|/rms 6.29e-03; M = 1..8 bit-identical: yes; BF16 dequant worst rel 0.0e+00
+  BF16  1000 x 4096: worst |err|/rms 5.28e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 8.5e-08  ok
+  gemv   512 x 1024: worst |err|/rms 3.41e-07 vs float64; M = 1..8 bit-identical: yes
+  tc     512 x 1024: worst |err|/rms 6.16e-03 vs float64 (BF16 activations); M = 1..8 bit-identical: yes
+  tiled  512 x 1024: worst |err|/rms 6.16e-03; M = 1..8 bit-identical: yes; BF16 dequant worst rel 0.0e+00
+  BF16   512 x 1024: worst |err|/rms 5.55e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 8.0e-08  ok
+  gemv   512 x 4096: worst |err|/rms 3.76e-07 vs float64; M = 1..8 bit-identical: yes
+  F32    512 x 4096: worst |err|/rms 5.89e-07 vs float64; M = 1..100 bit-identical to M = 1: yes; relu2+accumulate 7.2e-08  ok
+PASS
+===== nemo_iq_parity
+  IQ3_XXS 2688 x 1024: worst |err|/rms 4.89e-07 vs float64; M = 1..8 bit-identical: yes; 22 at once (permuted rows) = alone: yes; BF16 dequant worst rel 3.9e-03  ok
+  IQ4_XS  2688 x 1024: worst |err|/rms 5.93e-07 vs float64; M = 1..8 bit-identical: yes; 22 at once (permuted rows) = alone: yes; BF16 dequant worst rel 3.9e-03  ok
+  IQ4_NL  1024 x 2688: worst |err|/rms 5.64e-07 vs float64; M = 1..8 bit-identical: yes; 22 at once (permuted rows) = alone: yes; BF16 dequant worst rel 3.9e-03  ok
+  Q2_0    1024 x 2688: worst |err|/rms 4.70e-07 vs float64; M = 1..8 bit-identical: yes; 22 at once (permuted rows) = alone: yes; BF16 dequant worst rel 3.9e-03  ok
+  IQ3_XXS  301 x 4096: worst |err|/rms 3.98e-07 vs float64; M = 1..8 bit-identical: yes; 22 at once (permuted rows) = alone: yes; BF16 dequant worst rel 3.9e-03  ok
+  Q2_0      77 x 8192: worst |err|/rms 3.24e-07 vs float64; M = 1..8 bit-identical: yes; 22 at once (permuted rows) = alone: yes; BF16 dequant worst rel 3.9e-03  ok
+PASS
+===== mamba_parity (block 0)
+mamba_parity: layer 0, 64 tokens, H 128 P 64 N 128 G 8, in_proj 18560
+  core  y (gated norm out)   worst rel 4.993e-07 (token 59)
+  core  final SSM state      rel 8.332e-08, conv state rel 0.000e+00
+  full  in_proj GEMV         worst rel 7.275e-08 (token 7)
+  full  y                    worst rel 4.051e-07 (token 45)
+  full  mixer output         worst rel 1.835e-07 (token 31), final state rel 9.194e-08
+  prefill (37 + 27 tokens)   worst rel 4.993e-07 (token 59); bit-identical to decode: y yes, state yes, conv yes
+  ssd   (64 tokens, one call) worst rel 3.334e-07 (token 41), final state rel 1.142e-07; 2,000 synthetic rows vs the sequential scan: y 1.076e-06, state 3.454e-07
+PASS
+===== mamba_parity --negative
+  full  in_proj GEMV         worst rel 7.275e-08 (token 7)
+  full  y                    worst rel 1.263e+00 (token 48)
+  full  mixer output         worst rel 8.076e-01 (token 48), final state rel 7.831e-02
+  prefill (37 + 27 tokens)   worst rel 1.263e+00 (token 48); bit-identical to decode: y yes, state yes, conv yes
+  ssd   (64 tokens, one call) worst rel 1.263e+00 (token 48), final state rel 7.831e-02; 2,000 synthetic rows vs the sequential scan: y 1.248e-06, state 3.633e-07
+PASS (negative): broken conv tap detected
+===== attn_parity (block 7)
+attn_parity: layer 7, 64 tokens, 32 q heads / 2 kv heads x 128
+  q projection                  rel 6.222e-08
+  decode  (64 chunks)  attention vs BF16-K/V ref: worst rel 1.887e-02 (token 35); block output vs exact ref: rel 7.499e-03
+  prompt  ( 2 chunks)  attention vs BF16-K/V ref: worst rel 2.526e-02 (token 16); block output vs exact ref: rel 8.306e-03
+  verify  (16 chunks)  attention vs BF16-K/V ref: worst rel 1.887e-02 (token 35); block output vs exact ref: rel 7.499e-03
+PASS
+===== moe_parity (block 1)
+moe_parity: layer 1, 64 tokens, 512 experts top-22, latent 1024, ff 2688, shared 5376
+  router logits        worst rel 6.487e-08
+  selected sets        0 of 64 tokens differ from the reference
+  routing weights      worst rel 1.865e-07
+  routed latent sum    worst rel 7.188e-07
+  MoE output           worst rel 5.241e-07
+PASS
+===== moe_parity (block 5)
+moe_parity: layer 5, 64 tokens, 512 experts top-22, latent 1024, ff 2688, shared 5376
+  router logits        worst rel 5.686e-08
+  selected sets        0 of 64 tokens differ from the reference
+  routing weights      worst rel 2.161e-07
+  routed latent sum    worst rel 3.255e-07
+  MoE output           worst rel 2.892e-07
+PASS

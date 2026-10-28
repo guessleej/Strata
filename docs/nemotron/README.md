@@ -198,6 +198,7 @@ In `docs/nemotron/` (Russian originals of some of them are in `ru/`, working not
 | `VISION_MMPROJ.md` | the vision tower and the encoder |
 | `STAGE*.md`, `TENSOR_MAP.md` | the stage-by-stage build log and the tensor map |
 | `ROADMAP.md` | the plan |
+| `AMD_GFX1151.md` | the engine on AMD Strix Halo (gfx1151): the port, parity on that chip, build |
 | `strata-nemotron.example.json`, `strata-nemotron-16gb.example.json` | server configs |
 | `publish/HF_MODEL_CARD.md` | the Hugging Face model card |
 
