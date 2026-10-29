@@ -452,6 +452,19 @@ int run_serve(strata::core::NemoModel& m) {
                     ok = g_cc.take(m, prompt.data(), cimg, strata::core::ConversationCache::Chunk, err);
             }
         };
+        // the head: the end of the first message (the system prompt, the tools).  A client's new conversations share
+        // it but not the last message boundary, and it is usually shorter than g_every, so it gets a checkpoint of its own
+        int64_t head = 0;
+        for (int64_t i = 0; i < boundary; ++i)
+            if (prompt[(size_t) i] == 11) {   // <|im_end|>
+                head = i + 1 + (i + 1 < boundary && prompt[(size_t) i + 1] == 1010 ? 1 : 0);
+                break;
+            }
+        // ponytail: fixed floor, a short system prompt is cheaper to re-read than a checkpoint slot
+        if (ok && cc_on && head >= 1024 && head > at && head < boundary) {
+            feed(head);
+            if (ok) ok = g_cc.take(m, prompt.data(), cimg, strata::core::ConversationCache::Head, err);
+        }
         if (ok && boundary > at) {
             feed(boundary);
             if (ok && cc_on) ok = g_cc.take(m, prompt.data(), cimg, strata::core::ConversationCache::Message, err);

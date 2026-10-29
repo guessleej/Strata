@@ -145,6 +145,20 @@ latent projections through the shuffle-emulated mma. Both are the next work (bel
 
 Coherent, correct Traditional Chinese, no garbled tokens, which is what a broken kernel on this path would show first.
 
+**Conversation cache.** At this prefill speed the cache matters more than on the 5090. With `--prompt-cache 8
+--conversation-cache-mib 3000` (3.1 GB of pinned RAM; 22 GB stayed available) and chunk 16384, on 2026-10-29:
+
+| new conversation, same system prompt | prompt, tokens | reused | time |
+|---|---:|---:|---:|
+| synthetic 20K system prompt, 2nd and 3rd question | 20,359 | 16,384 | 124.2 s, then 30.7 s and 30.0 s |
+| synthetic 10K system prompt, 2nd and 3rd question (head checkpoint) | 10,312 | 10,294 | 65.3 s, then 4.8 s and 7.3 s |
+| the same, with a short unrelated request before each | 10,315 | 10,294 | 6.9 s and 5.2 s |
+| xHarness agent (9.4K of system prompt and tools), CLI | 9,386 | | 60 s, then 4 s, 7 s, 7 s |
+
+Before the head checkpoint (see [CONVERSATION_CACHE.md](CONVERSATION_CACHE.md)) a system prompt under 16,384 tokens
+was never reused. `--chunk 2048 --prompt-cache-every 2048` is not a way around it here: the engine failed with
+`unspecified launch failure` at decode token 399 of the first request and returned 400 afterwards (not investigated).
+
 ## Build
 
 ROCm 7.14.1 (TheRock) for gfx1151 as in [STRIX_HALO.md](../STRIX_HALO.md), section 1. Then:
@@ -189,5 +203,6 @@ The references were made on a separate x86 machine (torch 2.15 CPU, transformers
   prompt is not explained yet.
 - **WMMA for the emulated mma.** The int8 / f16 / bf16 fragments map onto gfx11's `v_wmma_*` instructions; the shuffle
   emulation is correct and slow. The prompt's experts could take the same route instead of hipBLAS BF16.
+- **Small chunks.** `--chunk 2048` crashes on gfx1151 (above); 16384 works.
 - **Other RDNA parts.** Only gfx1151 was built and tested. The same changes should hold for gfx1100 / gfx1201 (wave32, 64 KB
   LDS), untested.

@@ -118,13 +118,16 @@ ConversationCache::Choice ConversationCache::choose(const std::vector<int32_t>& 
 int ConversationCache::free_slot() {
     for (size_t i = 0; i < live_.size(); ++i)
         if (!live_[i].full) return (int) i;
-    // over N: the least recently used goes, but never the deepest of the conversation
+    // over N: the least recently used goes, but never the deepest of the conversation, and a head only when
+    // nothing else can (a long conversation would otherwise push out the system prompt the next one starts from)
     int64_t deep = deepest_live();
     int v = -1;
-    for (size_t i = 0; i < live_.size(); ++i) {
-        if (live_[i].c.pos == deep && live_.size() > 1) continue;
-        if (v < 0 || live_[i].used < live_[(size_t) v].used) v = (int) i;
-    }
+    for (int pass = 0; pass < 2 && v < 0; ++pass)
+        for (size_t i = 0; i < live_.size(); ++i) {
+            if (live_[i].c.pos == deep && live_.size() > 1) continue;
+            if (pass == 0 && live_[i].kind == Head) continue;
+            if (v < 0 || live_[i].used < live_[(size_t) v].used) v = (int) i;
+        }
     return v < 0 ? 0 : v;
 }
 
@@ -219,6 +222,12 @@ void ConversationCache::park_current(NemoModel& m, uint64_t keep_id) {
                 best = (int) i;
         if (best >= 0) pick.push_back(best);
     }
+    // and the head, so a new conversation after a side request (a title, another client) still skips the system prompt
+    for (size_t i = 0; i < live_.size(); ++i)
+        if (live_[i].full && live_[i].kind == Head && std::find(pick.begin(), pick.end(), (int) i) == pick.end()) {
+            pick.push_back((int) i);
+            break;
+        }
     const auto t0 = Clock::now();
     const Live& D = live_[(size_t) deep];
     const int64_t cells = D.c.pos;

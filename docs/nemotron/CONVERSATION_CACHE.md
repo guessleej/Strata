@@ -44,6 +44,10 @@ only while no `reset()` has happened since it was taken.
 ## When checkpoints are taken
 
 - at a message boundary (as before);
+- at the end of the first message (the "head": the system prompt and the tool list), when it is at least 1,024 tokens
+  long and ends before the last message boundary. A client's new conversations share this prefix but not the last
+  message boundary, and it is usually shorter than `--prompt-cache-every`, so without it a new conversation read the
+  whole system prompt again (added 2026-10-29);
 - at chunk boundaries of a long prompt, on an absolute grid that is a multiple of `--prompt-cache-every`;
 - after generation (the "answer" checkpoint). Its ids are the prompt plus the tokens actually fed to the model, so the
   next turn, whose prompt repeats the assistant answer, matches it exactly. With the cache on, the last speculation
@@ -65,12 +69,12 @@ match too: the keys of the pictures the checkpoint covers must equal the request
 ## Parking
 
 Parking copies the conversation's K/V cells `[0, pos)` of every K/V owner (the 8 attention layers and the MTP block)
-and up to three checkpoints (the deepest one and the two deepest message boundaries) to pinned host memory. The
+and up to four checkpoints (the deepest one, the two deepest message boundaries and the head) to pinned host memory. The
 checkpoints share the K/V cells up to the deepest position. Space comes from one arena (first-fit, with merging of free
 blocks) of `--conversation-cache-mib`.
 
 Eviction:
-- live checkpoints: least recently used, except the deepest;
+- live checkpoints: least recently used, except the deepest; a head goes only when every other slot is a head;
 - parked conversations: the oldest first; an entry whose ids are a prefix of a new entry's ids is replaced by it.
 
 ## Sizes and times
@@ -103,9 +107,11 @@ Measured in one engine process: `--skip-w 0`, `--spec 5`, chunk 16384, `--prompt
 - Parking happens on every branch. In a turn where the answer is re-rendered differently from what was generated, the
   answer checkpoint does not match, so each turn can park a copy of the conversation; entries with non-matching
   prefixes pile up until the budget evicts them.
-- Unparking restores only the checkpoints stored with the parked conversation (at most three), not the ones in
+- Unparking restores only the checkpoints stored with the parked conversation (at most four), not the ones in
   between.
 - A resume equals a cold read bit for bit only when the chunk split is the same.
+- The head helps only when the client sends the same system prompt every time. A clock in it (xHarness wrote
+  `local time HH:MM` there until 2026-10-29) changes the prefix every minute and no checkpoint ever matches.
 - A warm request does a little more work: in the A/B its prompt step went from 31–35 ms to 41–49 ms (the checkpoint
   restore, plus parking a copy of the conversation, ~23 ms per park).
 - The single-snapshot path is still there (`nocache=2`), and without the flags none of the pools are allocated.

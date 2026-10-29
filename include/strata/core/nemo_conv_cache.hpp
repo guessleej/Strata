@@ -32,7 +32,8 @@ struct ConvImages {
 
 class ConversationCache {
 public:
-    enum Kind { Chunk = 0, Message = 1, Answer = 2 };
+    /// Head: the end of the first message (the system prompt), the prefix new conversations of one client share
+    enum Kind { Chunk = 0, Message = 1, Answer = 2, Head = 3 };
     struct Choice {
         enum Src { None, Live, Park } src = None;
         int idx = -1;       ///< live slot
